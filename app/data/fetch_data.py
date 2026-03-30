@@ -41,3 +41,8 @@ def fetch_stock(symbol="INFY"):
     df.rename(columns={"index": "Date"}, inplace=True)
 
     return df
+
+AVAILABLE_COMPANIES = ["INFY", "TCS", "RELIANCE", "HDFCBANK"]
+
+def get_all_companies():
+    return AVAILABLE_COMPANIES

@@ -21,10 +21,23 @@ def add_metrics(df: pd.DataFrame):
 
     return df
 
-
 def get_summary(df: pd.DataFrame):
     return {
         "52_week_high": float(df['High'].max()),
         "52_week_low": float(df['Low'].min()),
         "avg_close": float(df['Close'].mean())
+    }
+
+# Additional helper functions 
+def compare_stocks(df1, df2):
+    df1 = df1.sort_values("Date")
+    df2 = df2.sort_values("Date")
+
+    # Align both datasets
+    merged = pd.merge(df1, df2, on="Date", suffixes=('_1', '_2'))
+
+    correlation = merged['Close_1'].corr(merged['Close_2'])
+
+    return {
+        "correlation": float(correlation)
     }

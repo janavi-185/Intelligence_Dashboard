@@ -6,13 +6,79 @@ A full-stack stock market analysis platform with RESTful API, clean data process
 
 ## Table of Contents
 
+- [Quick Start](#quick-start)
 - [Overview](#overview)
 - [Python & Data Handling](#python--data-handling)
+- [Automatic Data Handling & Scheduling](#automatic-data-handling--scheduling)
 - [API Design & Logic](#api-design--logic)
 - [Creativity in Data Insights](#creativity-in-data-insights)
 - [Visualization & UI](#visualization--ui)
 - [Technology Stack](#technology-stack)
 - [Project Structure](#project-structure)
+
+---
+
+## Quick Start
+
+### Prerequisites
+- Python 3.8+
+- pip (Python package manager)
+- Virtual environment
+
+### Installation & Setup
+
+```bash
+# 1. Clone or navigate to project
+cd /path/to/Jarnox
+
+# 2. Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Initialize database
+python init_db.py
+# When prompted: Choose 'y' to fetch stock data
+
+# 5. Start the server
+uvicorn app.main:app --reload
+
+# 6. Open browser to http://localhost:8000
+```
+
+### Project Structure
+
+```
+Jarnox/
+├── app/
+│   ├── models/
+│   │   └── database.py          # SQLAlchemy database config
+│   ├── data/
+│   │   ├── fetch_data.py        # Alpha Vantage API integration
+│   │   ├── preprocess.py        # Data preprocessing & metrics
+│   │   └── db_operations.py     # Database CRUD operations
+│   ├── services/
+│   │   ├── stock_service.py     # Business logic & calculations
+│   │   └── scheduler.py         # Background data refresh scheduler
+│   ├── api/
+│   │   └── routes.py            # REST API endpoints
+│   └── main.py                  # FastAPI application
+├── frontend/
+│   ├── index.html               # Dashboard interface
+│   ├── script.js                # Frontend logic
+│   └── style.css                # Styling & theme
+├── stock_data.db                # SQLite database
+├── init_db.py                   # Database initialization
+├── requirements.txt             # Python dependencies
+└── README.md                    # This file
+```
+
+### Available Stocks (13 Total)
+
+**Indian:** INFY, TCS, HDFCBANK, RELIANCE  
+**US Tech:** AAPL, MSFT, GOOGL, AMZN, TSLA, META, NVDA, AMD, INTC
 
 ---
 
@@ -67,6 +133,65 @@ Cache (JSON persistence) → Frontend
 - **Pandas**: Efficient data manipulation and time-series analysis
 - **NumPy**: Numerical computations for metrics
 - **Python-dotenv**: Secure environment variable management
+
+---
+
+## Automatic Data Handling & Scheduling
+
+### Background Scheduler for Fresh Data
+
+The application includes an **automatic background scheduler** that keeps stock data fresh without manual intervention:
+
+**How It Works:**
+- Runs a background job **every day at 10 PM UTC** (configurable)
+- Fetches latest data for all 13 tracked stocks
+- Automatically updates SQLite database
+- Works seamlessly - no impact on normal operations
+- Logs all activities for monitoring
+
+**Key Features:**
+
+1. **Automatic Updates** (`app/services/scheduler.py`):
+   - Scheduled task fetches all stocks in parallel
+   - Updates database with latest OHLCV data
+   - Skips stocks that fail (others continue)
+   - Continues running even if one stock fails
+
+2. **Database Integration**:
+   - Stores stock data in SQLite (`stock_data.db`)
+   - All API endpoints query this database
+   - Data persists across server restarts
+   - Can switch to PostgreSQL via `DATABASE_URL` env var
+
+3. **Production-Ready** (`app/services/scheduler.py`):
+   - Uses APScheduler for reliable task scheduling
+   - Graceful startup/shutdown
+   - Comprehensive error logging
+   - Works on cloud platforms (Heroku, Render, AWS, etc.)
+
+**Deployment:**
+- ✅ Auto-deploy on Render: Just push to GitHub
+- ✅ No manual data refreshes needed
+- ✅ Dashboard always has fresh data
+- ✅ Works 24/7 in background
+
+**Implementation Details:**
+```python
+# Runs daily at 10 PM UTC, updating all 13 stocks
+scheduler.add_job(
+    update_all_stocks,
+    'cron',
+    hour=22,              # 10 PM UTC
+    minute=0,
+    id='update_stocks_daily'
+)
+```
+
+**Monitored Operations:**
+- Stock fetch success/failure tracking
+- Database save confirmation
+- Error logging with timestamps
+- Console output for debugging
 
 ---
 

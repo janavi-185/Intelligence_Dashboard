@@ -13,13 +13,13 @@
         <!-- LEFT SIDEBAR -->
         <aside class="sidebar">
             <div class="logo-section">
-                <div class="logo">Stock</div>
+                <div class="logo">StockIQ</div>
             </div>
             <div class="sidebar-header">
-                <h2>Companies</h2>
+                <h2>Watchlist</h2>
             </div>
-            <ul id="companies-list" class="companies-list">
-                <li class="loading">Loading companies...</li>
+            <ul id="watchlist" class="companies-list">
+                <li class="loading">Loading watchlist...</li>
             </ul>
         </aside>
 
@@ -31,6 +31,8 @@
                     <div class="live-indicator">
                         <span class="live-dot"></span>
                         <span class="live-text">Live</span>
+                        <span class="live-separator">·</span>
+                        <span class="live-date" id="live-date"></span>
                     </div>
                 </div>
             </div>
@@ -41,64 +43,157 @@
                 <h1>Stock Dashboard</h1>
             </div>
             
-            <!-- FILTERS -->
-            <div class="filters-section">
+            <!-- TAB NAVIGATION -->
+            <div class="tabs-header">
+                <div class="tabs-container">
+                    <button class="tab-button active" data-tab="overview">
+                        <i class="fas fa-chart-line"></i> Overview
+                    </button>
+                    <button class="tab-button" data-tab="metrics">
+                        <i class="fas fa-gauge"></i> Metrics
+                    </button>
+                    <button class="tab-button" data-tab="gainers">
+                        <i class="fas fa-arrow-trend-up"></i> Gainers/Losers
+                    </button>
+                </div>
+            </div>
+
+            <!-- FILTERS ROW (for Overview tab) -->
+            <div class="filters-section" id="filters-row">
                 <button class="filter-btn active" data-filter="30">Last 30 Days</button>
                 <button class="filter-btn" data-filter="90">Last 90 Days</button>
-                <button class="filter-btn" data-filter="compare">Compare Stocks</button>
             </div>
 
-            <!-- CHART AREA -->
-            <div class="chart-section">
-                <div class="chart-header">
-                    <h3 id="chart-title">Select a company</h3>
+            <!-- TAB CONTENT AREAS -->
+
+            <!-- OVERVIEW TAB -->
+            <div id="overview-tab" class="tab-content active">
+                <!-- Company Header -->
+                <div id="company-header" class="company-header hidden">
+                    <div class="company-header-left">
+                        <h2 id="header-company-name">Select a company</h2>
+                        <p id="header-company-info">Choose from watchlist</p>
+                    </div>
+                    <div class="company-header-right">
+                        <div id="header-price" class="header-price">-</div>
+                        <div id="header-change" class="header-change">-</div>
+                    </div>
                 </div>
-                <div class="chart-wrapper">
-                    <canvas id="stock-chart"></canvas>
+
+                <!-- Metrics Cards -->
+                <div id="overview-metrics" class="overview-metrics hidden">
+                    <div class="metric-row">
+                        <div class="metric-card-small">
+                            <div class="metric-label">52W High</div>
+                            <div class="metric-value-large" id="metric-52w-high">-</div>
+                            <div class="metric-sublabel" id="metric-52w-high-label">-</div>
+                        </div>
+                        <div class="metric-card-small">
+                            <div class="metric-label">52W Low</div>
+                            <div class="metric-value-large" id="metric-52w-low">-</div>
+                            <div class="metric-sublabel" id="metric-52w-low-label">-</div>
+                        </div>
+                        <div class="metric-card-small">
+                            <div class="metric-label">Avg Close (30D)</div>
+                            <div class="metric-value-large" id="metric-avg-close">-</div>
+                            <div class="metric-sublabel">30-day mean</div>
+                        </div>
+                        <div class="metric-card-small">
+                            <div class="metric-label">Volatility</div>
+                            <div class="metric-value-large" id="metric-volatility">-</div>
+                            <div class="metric-sublabel">30D std dev</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chart-section">
+                    <div class="chart-header-with-buttons">
+                        <h3>Closing Price</h3>
+                        <div class="time-period-buttons">
+                            <button class="time-btn active" data-period="30">1M</button>
+                            <button class="time-btn" data-period="90">3M</button>
+                        </div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <div id="empty-state" class="empty-state">
+                            <div class="empty-state-icon">
+                                <i class="fas fa-chart-line"></i>
+                            </div>
+                            <h4>No Data Selected</h4>
+                            <p>Choose a company from the sidebar to view price charts and analysis</p>
+                        </div>
+                        <canvas id="stock-chart" style="display: none;"></canvas>
+                    </div>
                 </div>
             </div>
 
-            <!-- TOP GAINERS/LOSERS -->
-            <div class="insights-section">
+            <!-- METRICS TAB -->
+            <div id="metrics-tab" class="tab-content hidden">
+                <!-- Correlation Matrix -->
+                <div id="correlation-section" class="chart-section">
+                    <div class="chart-header">
+                        <h3>Correlation Matrix (60-day returns)</h3>
+                    </div>
+                    <div id="correlation-matrix-container" class="correlation-matrix-wrapper"></div>
+                </div>
+                
+                <!-- Comparison Section -->
+                <div class="compare-section" style="margin-top: 24px;">
+                    <div class="compare-controls">
+                        <select id="compare-stock1" class="compare-select">
+                            <option value="">Select First Stock</option>
+                        </select>
+                        <span class="compare-vs">vs</span>
+                        <select id="compare-stock2" class="compare-select">
+                            <option value="">Select Second Stock</option>
+                        </select>
+                        <button class="execute-btn" id="execute-compare">Compare</button>
+                    </div>
+                    <div id="compare-results" class="compare-results">
+                        <div class="compare-charts">
+                            <div class="compare-chart-wrapper">
+                                <canvas id="comparison-chart"></canvas>
+                            </div>
+                            <div class="comparison-stats">
+                                <div id="correlation-info" class="stat-card"></div>
+                                <div id="comparison-metrics" class="stat-card"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- GAINERS/LOSERS TAB -->
+            <div id="gainers-tab" class="tab-content hidden">
+                <div class="insights-section">
+                    <h3 style="margin-bottom: 20px;">Market Overview</h3>
+                    <div class="insights-container">
+                        <div class="insights-panel">
+                            <h3>Top Gainers</h3>
+                            <div id="top-gainers" class="insights-list"></div>
+                        </div>
+                        <div class="insights-panel">
+                            <h3>Top Losers</h3>
+                            <div id="top-losers" class="insights-list"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- COMPARE TAB -->
+            <!-- COMPARE TAB - HIDDEN (content moved to metrics tab) -->
+            <div id="compare-tab" class="tab-content hidden" style="display: none;"></div>
+
+            <!-- OLD INSIGHTS (kept for legacy, hidden) -->
+            <div class="insights-section" style="display: none;">
                 <div class="insights-container">
                     <div class="insights-panel">
                         <h3>Top Gainers</h3>
-                        <div id="top-gainers" class="insights-list"></div>
+                        <div id="top-gainers-legacy" class="insights-list"></div>
                     </div>
                     <div class="insights-panel">
                         <h3>Top Losers</h3>
-                        <div id="top-losers" class="insights-list"></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- COMPARISON MODE (hidden by default) -->
-            <div id="compare-mode" class="compare-mode hidden">
-                <div class="compare-header">
-                    <button class="back-btn" id="back-from-compare">
-                        <i class="fas fa-arrow-left"></i> Back
-                    </button>
-                    <h3>Compare Stocks</h3>
-                </div>
-                <div class="compare-controls">
-                    <select id="compare-stock1" class="compare-select">
-                        <option value="">Select First Stock</option>
-                    </select>
-                    <span class="compare-vs">vs</span>
-                    <select id="compare-stock2" class="compare-select">
-                        <option value="">Select Second Stock</option>
-                    </select>
-                    <button class="execute-btn" id="execute-compare">Compare</button>
-                </div>
-                <div id="compare-results" class="compare-results hidden">
-                    <div class="compare-charts">
-                        <div class="compare-chart-wrapper">
-                            <canvas id="comparison-chart"></canvas>
-                        </div>
-                        <div class="comparison-stats">
-                            <div id="correlation-info" class="stat-card"></div>
-                            <div id="comparison-metrics" class="stat-card"></div>
-                        </div>
+                        <div id="top-losers-legacy" class="insights-list"></div>
                     </div>
                 </div>
             </div>

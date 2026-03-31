@@ -1,21 +1,66 @@
 from app.data.fetch_data import fetch_stock
 from app.data.preprocess import preprocess_data, add_metrics, get_summary
+from app.data.db_operations import (
+    save_stock_data, 
+    get_stock_data_by_days, 
+    get_all_stock_data
+)
+from app.models.database import SessionLocal
+import pandas as pd
+from datetime import datetime
+
+# Company metadata mapping
+COMPANY_METADATA = {
+    # Indian Stocks
+    "INFY": {"name": "Infosys", "sector": "IT Services"},
+    "TCS": {"name": "Tata Consultancy", "sector": "IT Services"},
+    "RELIANCE": {"name": "Reliance Industries", "sector": "Energy"},
+    "HDFCBANK": {"name": "HDFC Bank", "sector": "Banking"},
+    
+    # US Tech
+    "AAPL": {"name": "Apple", "sector": "Technology"},
+    "MSFT": {"name": "Microsoft", "sector": "Technology"},
+    "GOOGL": {"name": "Google", "sector": "Technology"},
+    "AMZN": {"name": "Amazon", "sector": "Consumer"},
+    "TSLA": {"name": "Tesla", "sector": "Automotive"},
+    "META": {"name": "Meta", "sector": "Technology"},
+    "NVDA": {"name": "NVIDIA", "sector": "Technology"},
+    "AMD": {"name": "AMD", "sector": "Technology"},
+    "INTC": {"name": "Intel", "sector": "Technology"},
+}
 
 def get_stock_data(symbol: str):
-    df = fetch_stock(symbol)
-
-    if df.empty:
-        raise ValueError(f"No data found for {symbol}")
-
-    df = preprocess_data(df)
-    df = add_metrics(df)
-    return df
+    """Fetch stock data from database or API if not available"""
+    db = SessionLocal()
+    try:
+        # Try to get data from database (all available data)
+        df = get_all_stock_data(db, symbol)
+        
+        # If database is empty or data is stale, fetch from API
+        if df.empty:
+            df = fetch_stock(symbol)
+            if not df.empty:
+                df = preprocess_data(df)
+                save_stock_data(db, symbol, df)
+        
+        if df.empty:
+            raise ValueError(f"No data found for {symbol}")
+        
+        # Apply preprocessing and metrics if not already applied
+        if 'Daily Return' not in df.columns:
+            df = add_metrics(df)
+        
+        return df
+    finally:
+        db.close()
 
 def get_last_30_days(symbol: str):
+    """Get last 30 days of stock data"""
     df = get_stock_data(symbol)
     return df.tail(30).to_dict(orient="records")
 
 def get_last_90_days(symbol: str):
+    """Get last 90 days of stock data"""
     df = get_stock_data(symbol)
     return df.tail(90).to_dict(orient="records")
 
@@ -39,3 +84,138 @@ def compare_two_stocks(symbol1: str, symbol2: str):
         "symbol2": symbol2,
         "correlation": float(correlation)
     }
+
+def get_watchlist(symbols: list = None):
+    """Get watchlist data with current prices and daily % change"""
+    if symbols is None:
+        from app.data.fetch_data import AVAILABLE_COMPANIES
+        symbols = AVAILABLE_COMPANIES
+    
+    watchlist = []
+    
+    for symbol in symbols:
+        try:
+            df = get_stock_data(symbol)
+            if df.empty:
+                continue
+            
+            # Get latest and previous close
+            latest = df.iloc[-1]
+            previous = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+            
+            current_price = float(latest['Close'])
+            prev_price = float(previous['Close'])
+            daily_change = ((current_price - prev_price) / prev_price) * 100
+            
+            metadata = COMPANY_METADATA.get(symbol, {"name": symbol, "sector": "N/A"})
+            
+            watchlist.append({
+                "symbol": symbol,
+                "name": metadata["name"],
+                "sector": metadata["sector"],
+                "price": current_price,
+                "daily_change": daily_change,
+                "change_color": "gain" if daily_change >= 0 else "loss"
+            })
+        except Exception as e:
+            continue
+    
+    # Sort by symbol for consistent order
+    watchlist.sort(key=lambda x: x['symbol'])
+    return watchlist
+
+def get_gainers_losers():
+    """Get top gainers and losers from watchlist"""
+    watchlist = get_watchlist()
+    
+    # Sort by daily change
+    sorted_list = sorted(watchlist, key=lambda x: x['daily_change'], reverse=True)
+    
+    return {
+        "gainers": sorted_list[:5],
+        "losers": sorted_list[-5:][::-1]
+    }
+
+def get_stock_metrics(symbol: str):
+    """Get detailed metrics for a stock"""
+    try:
+        df = get_stock_data(symbol)
+        if df.empty:
+            raise ValueError(f"No data found for {symbol}")
+        
+        latest = df.iloc[-1]
+        previous = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+        
+        current_price = float(latest['Close'])
+        prev_price = float(previous['Close'])
+        
+        # Calculate metrics
+        daily_change = ((current_price - prev_price) / prev_price) * 100
+        high_52w = float(df['High'].max())
+        low_52w = float(df['Low'].min())
+        avg_price = float(df['Close'].mean())
+        volatility = float(df['Volatility'].iloc[-1]) if 'Volatility' in df.columns else 0
+        volume = float(latest['Volume'])
+        
+        # Calculate normalized performance (percentage from 52w low)
+        performance_from_low = ((current_price - low_52w) / low_52w) * 100
+        
+        # Get data for all data points for normalized chart
+        normalized_data = []
+        for idx, row in df.iterrows():
+            norm_price = ((float(row['Close']) - low_52w) / low_52w) * 100
+            normalized_data.append({
+                "date": row['Date'].strftime('%Y-%m-%d'),
+                "value": norm_price,
+                "close": float(row['Close'])
+            })
+        
+        metadata = COMPANY_METADATA.get(symbol, {"name": symbol, "sector": "N/A"})
+        
+        return {
+            "symbol": symbol,
+            "name": metadata["name"],
+            "sector": metadata["sector"],
+            "current_price": current_price,
+            "daily_change": daily_change,
+            "daily_change_color": "gain" if daily_change >= 0 else "loss",
+            "high_52w": high_52w,
+            "low_52w": low_52w,
+            "avg_price": avg_price,
+            "volatility": volatility,
+            "volume": volume,
+            "performance_from_low": performance_from_low,
+            "normalized_data": normalized_data
+        }
+    except Exception as e:
+        raise ValueError(f"Error calculating metrics for {symbol}: {str(e)}")
+
+def get_correlation_matrix():
+    """Calculate correlation matrix for top stocks (90-day returns)"""
+    from app.data.fetch_data import AVAILABLE_COMPANIES
+    import pandas as pd
+    
+    try:
+        # Get 90 days of data for each stock
+        stocks_data = {}
+        for symbol in AVAILABLE_COMPANIES[:6]:  # Top 6 stocks for correlation
+            df = get_stock_data(symbol)
+            if not df.empty and len(df) >= 60:
+                stocks_data[symbol] = df.tail(60)['Close'].values
+        
+        # Create dataframe from all stocks
+        if not stocks_data:
+            return {"error": "Insufficient data"}
+        
+        df_corr = pd.DataFrame(stocks_data)
+        correlation_matrix = df_corr.corr().round(2)
+        
+        # Convert to dictionary format for JSON response
+        result = {
+            "symbols": list(correlation_matrix.columns),
+            "matrix": correlation_matrix.values.tolist(),
+            "period": "60-day"
+        }
+        return result
+    except Exception as e:
+        return {"error": str(e)}

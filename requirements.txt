@@ -6,3 +6,5 @@ yfinance
 matplotlib
 requests
 python-dotenv
+sqlalchemy
+apscheduler

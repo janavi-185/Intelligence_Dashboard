@@ -1,992 +1,508 @@
-// Stock Dashboard JS
-// Determine API URL based on environment
-const API_BASE_URL = (() => {
-    const hostname = window.location.hostname;
-    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
-    const port = window.location.port;
-    
-    if (isLocalhost) {
-        // Development: localhost frontend talks to localhost:8000 backend
-        return 'http://localhost:8000';
-    } else {
-        // Production: use relative paths (same origin)
-        // Frontend and backend are served from the same domain
-        return window.location.origin;
-    }
+// Stock Dashboard - Refactored & Compact
+const API_URL = (() => {
+    const { hostname, origin } = window.location;
+    return (hostname === 'localhost' || hostname === '127.0.0.1') ? 'http://localhost:8000' : origin;
 })();
 
-console.log('API Base URL:', API_BASE_URL);
+const STATE = {
+    charts: { main: null, comparison: null, normalized: null },
+    companies: [],
+    stockData: {},
+    selectedCompany: null,
+    currentTab: 'overview',
+    currentFilter: '30'
+};
 
-let chart = null;
-let comparisonChart = null;
-let normalizedChart = null;
-let companies = [];
-let allStockData = {};
-let currentFilter = '30';
-let selectedCompany = null;
-let currentTab = 'overview';
+// Color constants
+const COLORS = { green: '#2ecc71', greenLight: 'rgba(46, 204, 113, 0.1)', orange: '#f39c12', teal: '#507782', red: '#e74c3c', text: '#333' };
 
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('Dashboard initializing...');
-    updateLiveDate();
-    initApp();
-    setupEventListeners();
-    setupTabListeners();
+// Utilities
+const q = id => document.getElementById(id);
+const qAll = cls => document.querySelectorAll(`.${cls}`);
+const qSel = sel => document.querySelectorAll(sel);
+const fmt = { 
+    price: v => `₹${parseFloat(v).toFixed(2)}`, 
+    pct: v => `${v >= 0 ? '+' : ''}${parseFloat(v).toFixed(2)}%`,
+    date: d => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    vol: v => `${(v / 1e6).toFixed(1)}M`
+};
+
+// Async API calls
+const API = {
+    fetch: (endpoint) => fetch(`${API_URL}${endpoint}`).then(r => r.ok ? r.json() : Promise.reject(r)),
+    getCompanies: () => API.fetch('/companies').then(d => d.companies),
+    getWatchlist: () => API.fetch('/watchlist').then(d => d.watchlist),
+    getData: (sym, days = 90) => API.fetch(`/data/${sym}/${days}`).then(d => d.data),
+    getMetrics: (sym) => API.fetch(`/metrics/${sym}`),
+    getComparison: (s1, s2) => API.fetch(`/compare?symbol1=${s1}&symbol2=${s2}`),
+    getCorrelation: () => API.fetch('/correlation-matrix'),
+    getGainersLosers: () => API.fetch('/gainers-losers')
+};
+
+// Data processing
+const proc = {
+    filterDays: (data, days) => {
+        const cut = new Date();
+        cut.setDate(cut.getDate() - days);
+        return data.filter(d => new Date(d.Date) >= cut);
+    },
+    sortDates: (data) => [...data].sort((a, b) => new Date(a.Date) - new Date(b.Date)),
+    trend: (vals) => {
+        if (vals.length < 2) return vals;
+        const n = vals.length;
+        let sx = 0, sy = 0, sxy = 0, sx2 = 0;
+        for (let i = 0; i < n; i++) { sx += i; sy += vals[i]; sxy += i * vals[i]; sx2 += i * i; }
+        const m = (n * sxy - sx * sy) / (n * sx2 - sx * sx);
+        const b = (sy - m * sx) / n;
+        return vals.map((_, i) => m * i + b);
+    },
+    priceChange: (start, end) => ((end - start) / start) * 100
+};
+
+// Chart builder
+const buildChart = (type, labels, datasets, options = {}) => ({
+    type,
+    data: { labels, datasets },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { display: true, labels: { font: { size: 13 }, color: COLORS.text, padding: 12 } },
+            tooltip: {
+                backgroundColor: 'rgba(255,255,255,0.95)',
+                padding: 12,
+                titleFont: { size: 14 },
+                bodyFont: { size: 13 },
+                titleColor: COLORS.text,
+                bodyColor: COLORS.text,
+                borderColor: COLORS.teal,
+                borderWidth: 1,
+                ...options.tooltip
+            }
+        },
+        scales: {
+            y: {
+                beginAtZero: false,
+                grid: { color: 'rgba(64,64,64,0.5)', drawBorder: false },
+                ticks: { color: '#909090', font: { size: 12 }, ...options.yTicks }
+            },
+            x: { grid: { display: false }, ticks: { color: '#909090', font: { size: 12 } } }
+        }
+    }
 });
 
-function updateLiveDate() {
-    const dateElement = document.getElementById('live-date');
-    const today = new Date();
-    const options = { month: 'short', day: 'numeric', year: 'numeric' };
-    const formattedDate = today.toLocaleDateString('en-US', options);
-    dateElement.textContent = formattedDate;
-}
-
-/* ===== INITIALIZATION ===== */
-async function initApp() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/companies`);
-        const data = await response.json();
-        companies = data.companies;
-        console.log('Companies loaded:', companies);
-        
-        // Load watchlist data
-        await loadWatchlist();
-        populateCompareSelects();
-        loadAllStockData();
-        
-        // Load gainers/losers for Gainers tab
-        loadGainersLosers();
-    } catch (error) {
-        console.error('Error loading companies:', error);
-    }
-}
-
-/* ===== TAB MANAGEMENT ===== */
-function setupTabListeners() {
-    document.querySelectorAll('.tab-button').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const tabName = e.target.closest('.tab-button').dataset.tab;
-            switchTab(tabName);
-        });
-    });
-}
-
-function switchTab(tabName) {
-    currentTab = tabName;
+// Chart rendering
+const renderChart = (data, symbol) => {
+    const canvas = q('stock-chart');
+    if (!canvas) return;
+    const emptyState = q('empty-state');
+    if (emptyState) emptyState.style.display = 'none';
+    canvas.style.display = 'block';
     
-    // Update tab buttons
-    document.querySelectorAll('.tab-button').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+    const sorted = proc.sortDates(data);
+    const dates = sorted.map(d => fmt.date(d.Date));
+    const prices = sorted.map(d => parseFloat(d.Close));
+    const trend = proc.trend(prices);
     
-    // Hide all tab contents
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-        content.classList.add('hidden');
-    });
+    if (STATE.charts.main) STATE.charts.main.destroy();
     
-    // Show selected tab content
-    const tabContent = document.getElementById(`${tabName}-tab`);
-    if (tabContent) {
-        tabContent.classList.add('active');
-        tabContent.classList.remove('hidden');
-    }
+    STATE.charts.main = new Chart(canvas, buildChart('line', dates, [
+        {
+            label: `${symbol} Price (₹)`,
+            data: prices,
+            borderColor: COLORS.green,
+            backgroundColor: COLORS.greenLight,
+            borderWidth: 2.5,
+            pointRadius: 0,
+            fill: true,
+            tension: 0.4
+        },
+        { label: 'Trend', data: trend, borderColor: COLORS.orange, borderWidth: 2, borderDash: [5, 5], fill: false, tension: 0.4 }
+    ], { yTicks: { callback: v => fmt.price(v) } }));
+};
+
+const renderNormalized = (data, symbol) => {
+    const canvas = q('normalized-chart');
+    if (!canvas) return;
+    canvas.style.display = 'block';
     
-    // Handle tab-specific actions
-    if (tabName === 'metrics' && selectedCompany) {
-        loadCorrelationMatrix();
-    } else if (tabName === 'metrics') {
-        loadCorrelationMatrix();
-    } else if (tabName === 'gainers') {
-        loadGainersLosers();
-    } else if (tabName === 'overview' && selectedCompany) {
-        fetchAndRenderChart(selectedCompany, currentFilter);
-    }
-}
+    const sorted = proc.sortDates(data.map(d => ({ Date: d.date, Close: d.value })));
+    const dates = sorted.map(d => fmt.date(d.Date));
+    const values = sorted.map(d => parseFloat(d.Close));
+    
+    if (STATE.charts.normalized) STATE.charts.normalized.destroy();
+    
+    STATE.charts.normalized = new Chart(canvas, buildChart('line', dates, [{
+        label: `${symbol} Performance from 52W Low (%)`,
+        data: values,
+        borderColor: COLORS.green,
+        backgroundColor: COLORS.greenLight,
+        borderWidth: 2.5,
+        pointRadius: 3,
+        fill: true,
+        tension: 0.4
+    }], { yTicks: { callback: v => `${v.toFixed(0)}%` } }));
+};
 
-/* ===== EVENT LISTENERS ===== */
-function setupEventListeners() {
-    // Filter buttons
-    document.querySelectorAll('.filter-btn').forEach(btn => {
-        btn.addEventListener('click', handleFilterChange);
-    });
+const renderComparison = (data1, data2, s1, s2) => {
+    const comparisonCanvas = q('comparison-chart');
+    if (comparisonCanvas) comparisonCanvas.style.display = 'block';
+    
+    data1.sort((a, b) => new Date(a.Date) - new Date(b.Date));
+    data2.sort((a, b) => new Date(a.Date) - new Date(b.Date));
+    
+    const d1 = proc.filterDays(data1, 30);
+    const d2 = proc.filterDays(data2, 30);
+    const dates1 = new Set(d1.map(d => d.Date));
+    const dates2 = new Set(d2.map(d => d.Date));
+    const common = Array.from(dates1).filter(d => dates2.has(d)).sort();
+    
+    const p1 = common.map(d => parseFloat(data1.find(x => x.Date === d)?.Close || 0));
+    const p2 = common.map(d => parseFloat(data2.find(x => x.Date === d)?.Close || 0));
+    const dateLabels = common.map(d => fmt.date(d));
+    
+    if (STATE.charts.comparison) STATE.charts.comparison.destroy();
+    
+    STATE.charts.comparison = new Chart(q('comparison-chart'), buildChart('line', dateLabels, [
+        { label: `${s1} (₹)`, data: p1, borderColor: COLORS.teal, backgroundColor: 'rgba(80,119,130,0.05)', borderWidth: 2.5, pointRadius: 3, fill: true, tension: 0.4 },
+        { label: `${s2} (₹)`, data: p2, borderColor: COLORS.red, backgroundColor: 'rgba(231,76,60,0.05)', borderWidth: 2.5, pointRadius: 3, fill: true, tension: 0.4 }
+    ], { yTicks: { callback: v => fmt.price(v) } }));
+};
 
-    // Time period buttons
-    document.querySelectorAll('.time-btn').forEach(btn => {
-        btn.addEventListener('click', handleTimePeriodChange);
-    });
+// DOM updates
+const switchTab = (name) => {
+    STATE.currentTab = name;
+    qAll('tab-button').forEach(b => b.classList.remove('active'));
+    qSel(`[data-tab="${name}"]`)[0]?.classList.add('active');
+    qAll('tab-content').forEach(c => { c.classList.remove('active'); c.classList.add('hidden'); });
+    const tc = q(`${name}-tab`);
+    if (tc) { tc.classList.add('active'); tc.classList.remove('hidden'); }
+    
+    if (name === 'metrics' && STATE.selectedCompany) { loadMetrics(STATE.selectedCompany); loadCorrelationMatrix(); }
+    else if (name === 'metrics') loadCorrelationMatrix();
+    else if (name === 'gainers') loadGainersLosers();
+    else if (name === 'overview' && STATE.selectedCompany) fetchAndRenderChart(STATE.selectedCompany, STATE.currentFilter);
+};
 
-    // Company list
-    const companiesList = document.getElementById('watchlist');
-    companiesList.addEventListener('click', (e) => {
-        const li = e.target.closest('.watchlist-item');
-        if (li) {
-            selectCompany(li.dataset.symbol, li);
-        }
-    });
+const selectCompany = (symbol, el) => {
+    STATE.selectedCompany = symbol;
+    qAll('watchlist-item').forEach(i => i.classList.remove('active'));
+    el?.classList.add('active');
+    switchTab('overview');
+    qAll('time-btn').forEach(b => b.classList.remove('active'));
+    qSel('[data-period="30"]')[0]?.classList.add('active');
+    STATE.currentFilter = '30';
+    loadOverviewHeader(symbol);
+    fetchAndRenderChart(symbol, '30');
+};
 
-    // Comparison mode
-    document.getElementById('execute-compare').addEventListener('click', executeComparison);
-}
-
-/* ===== COMPANY LIST ===== */
-async function loadWatchlist() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/watchlist`);
-        const data = await response.json();
-        displayWatchlist(data.watchlist);
-    } catch (error) {
-        console.error('Error loading watchlist:', error);
-    }
-}
-
-function displayWatchlist(watchlist) {
-    const list = document.getElementById('watchlist');
+const displayWatchlist = (items) => {
+    const list = q('watchlist');
     list.innerHTML = '';
-    
-    watchlist.forEach(item => {
+    items.forEach(item => {
         const li = document.createElement('li');
         li.className = 'watchlist-item';
         li.dataset.symbol = item.symbol;
-        
-        const changeSign = item.daily_change >= 0 ? '+' : '';
-        const changeClass = item.change_color;
-        
-        li.innerHTML = `
-            <div class="watchlist-item-header">
-                <div>
-                    <div class="watchlist-symbol">${item.symbol}</div>
-                    <div class="watchlist-name">${item.name}</div>
-                </div>
-                <div style="text-align: right;">
-                    <div class="watchlist-price">₹${item.price.toFixed(2)}</div>
-                    <div class="watchlist-change ${changeClass}">${changeSign}${item.daily_change.toFixed(2)}%</div>
-                </div>
-            </div>
-        `;
-        
-        li.addEventListener('click', () => {
-            selectCompany(item.symbol, li);
-        });
-        
+        const sign = item.daily_change >= 0 ? '+' : '';
+        li.innerHTML = `<div class="watchlist-item-header"><div><div class="watchlist-symbol">${item.symbol}</div><div class="watchlist-name">${item.name}</div></div><div style="text-align:right"><div class="watchlist-price">${fmt.price(item.price)}</div><div class="watchlist-change ${item.change_color}">${sign}${item.daily_change.toFixed(2)}%</div></div></div>`;
+        li.addEventListener('click', () => selectCompany(item.symbol, li));
         list.appendChild(li);
     });
-}
+};
 
-function selectCompany(symbol, element) {
-    selectedCompany = symbol;
-    
-    // Update active state
-    document.querySelectorAll('.watchlist-item').forEach(item => {
-        item.classList.remove('active');
-    });
-    element.classList.add('active');
-    
-    // Switch to overview tab
-    switchTab('overview');
-    
-    // Reset time period buttons to 1M (30 days)
-    document.querySelectorAll('.time-btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    document.querySelector('[data-period="30"]').classList.add('active');
-    currentFilter = '30';
-    
-    // Load and display metrics/header
-    loadOverviewHeader(symbol);
-    
-    // Fetch and render chart with current filter (30 days by default)
-    fetchAndRenderChart(symbol, '30');
-}
-
-async function loadOverviewHeader(symbol) {
-    try {
-        const response = await fetch(`${API_BASE_URL}/metrics/${symbol}`);
-        if (!response.ok) throw new Error('Failed to fetch metrics');
-        const metricsData = await response.json();
-        displayOverviewHeader(metricsData);
-    } catch (error) {
-        console.error('Error loading overview header:', error);
-    }
-}
-
-function displayOverviewHeader(data) {
-    const header = document.getElementById('company-header');
-    const metrics = document.getElementById('overview-metrics');
-    
-    // Show header and metrics
-    header.classList.remove('hidden');
-    metrics.classList.remove('hidden');
-    
-    // Update header
-    document.getElementById('header-company-name').textContent = data.name;
-    document.getElementById('header-company-info').textContent = `Finance · ${data.sector}`;
-    document.getElementById('header-price').textContent = `₹${data.current_price.toFixed(2)}`;
-    
-    const changeElement = document.getElementById('header-change');
-    const changeSign = data.daily_change >= 0 ? '+' : '';
-    changeElement.textContent = `${changeSign}${data.daily_change.toFixed(2)}% today`;
-    changeElement.className = `header-change ${data.daily_change_color}`;
-    
-    // Update metrics
-    document.getElementById('metric-52w-high').textContent = `₹${data.high_52w.toFixed(0)}`;
-    document.getElementById('metric-52w-high-label').textContent = 'Max in 52 weeks';
-    document.getElementById('metric-52w-low').textContent = `₹${data.low_52w.toFixed(0)}`;
-    document.getElementById('metric-52w-low-label').textContent = 'Min in 52 weeks';
-    document.getElementById('metric-avg-close').textContent = `₹${data.avg_price.toFixed(0)}`;
-    document.getElementById('metric-volatility').textContent = `${(data.volatility * 100).toFixed(2)}%`;
-}
-
-/* ===== FILTERS ===== */
-function handleFilterChange(e) {
-    const filterValue = e.target.dataset.filter;
-    currentFilter = filterValue;
-    
-    // Update active state
-    document.querySelectorAll('.filter-btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    e.target.classList.add('active');
-    
-    // Re-render chart with new filter (only if in Overview tab)
-    if (currentTab === 'overview' && selectedCompany) {
-        fetchAndRenderChart(selectedCompany, filterValue);
-    }
-}
-
-function handleTimePeriodChange(e) {
-    const period = e.target.dataset.period;
-    currentFilter = period;
-    
-    // Update active state
-    document.querySelectorAll('.time-btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    e.target.classList.add('active');
-    
-    // Re-render chart with new period
-    if (selectedCompany) {
-        fetchAndRenderChart(selectedCompany, period);
-    }
-}
-
-async function fetchAndRenderChart(symbol, days) {
-    try {
-        // Get 90-day data for all periods to have sufficient data
-        let url = `${API_BASE_URL}/data/${symbol}/90`;
-        
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`Failed to fetch ${symbol}`);
-        const data = await response.json();
-        
-        // Store in allStockData for local reference
-        allStockData[symbol] = data.data;
-        
-        // Filter data based on period selected
-        const filteredData = filterDataByDays(data.data, parseInt(days));
-        
-        // Render the chart
-        renderChart(filteredData, symbol);
-    } catch (error) {
-        console.error(`Error fetching data for ${symbol}:`, error);
-    }
-}
-
-/* ===== CHART RENDERING ===== */
-async function loadAllStockData() {
-    for (const company of companies) {
-        try {
-            const response = await fetch(`${API_BASE_URL}/data/${company}`);
-            if (!response.ok) throw new Error(`Failed to load ${company}`);
-            const data = await response.json();
-            allStockData[company] = data.data;
-        } catch (error) {
-            console.error(`Error loading data for ${company}:`, error);
-        }
-    }
-    
-    // Refresh insights after loading all data
-    updateInsights();
-}
-
-function renderChart(data, symbol) {
-    // Hide empty state and show canvas
-    const emptyState = document.getElementById('empty-state');
-    const canvas = document.getElementById('stock-chart');
-    
-    if (emptyState) emptyState.style.display = 'none';
-    if (canvas) canvas.style.display = 'block';
-    
-    // Data already comes filtered from API (30 or 90 days)
-    // Just sort by date
-    let chartData = [...data].sort((a, b) => new Date(a.Date) - new Date(b.Date));
-    
-    const dates = chartData.map(d => {
-        const date = new Date(d.Date);
-        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    });
-    
-    const closes = chartData.map(d => parseFloat(d.Close));
-    
-    // Calculate trend line (using simple linear regression for yellow dashed line)
-    const trendData = calculateTrendLine(closes);
-    
-    const ctx = document.getElementById('stock-chart');
-    if (!ctx) return;
-    
-    if (chart) chart.destroy();
-    
-    chart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: dates,
-            datasets: [
-                {
-                    label: `${symbol} Price (₹)`,
-                    data: closes,
-                    borderColor: '#2ecc71',
-                    backgroundColor: 'rgba(46, 204, 113, 0.1)',
-                    borderWidth: 2.5,
-                    pointRadius: 0,
-                    pointBackgroundColor: '#2ecc71',
-                    pointBorderColor: '#ffffff',
-                    pointBorderWidth: 2,
-                    pointHoverRadius: 6,
-                    fill: true,
-                    tension: 0.4,
-                    hoverBackgroundColor: 'rgba(46, 204, 113, 0.2)',
-                },
-                {
-                    label: 'Trend',
-                    data: trendData,
-                    borderColor: '#f39c12',
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    borderDash: [5, 5],
-                    pointRadius: 0,
-                    fill: false,
-                    tension: 0.4,
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    display: true,
-                    labels: {
-                        font: { size: 13 },
-                        color: '#333333',
-                        padding: 12,
-                        usePointStyle: true,
-                    }
-                },
-                tooltip: {
-                    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-                    padding: 12,
-                    titleFont: { size: 14 },
-                    bodyFont: { size: 13 },
-                    borderColor: '#507782',
-                    borderWidth: 1,
-                    displayColors: true,
-                    titleColor: '#333333',
-                    bodyColor: '#333333',
-                    callbacks: {
-                        label: (context) => {
-                            if (context.datasetIndex === 0) {
-                                return `Price: ₹${context.parsed.y.toFixed(2)}`;
-                            }
-                            return `Trend: ₹${context.parsed.y.toFixed(2)}`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: false,
-                    grid: {
-                        color: 'rgba(64, 64, 64, 0.5)',
-                        drawBorder: false,
-                    },
-                    ticks: {
-                        color: '#909090',
-                        font: { size: 12 },
-                        callback: (value) => `₹${value.toFixed(0)}`
-                    }
-                },
-                x: {
-                    grid: { display: false, color: 'transparent' },
-                    ticks: {
-                        color: '#909090',
-                        font: { size: 12 }
-                    }
-                }
-            }
-        }
-    });
-    
-    // Update canvas background
-    const canvasContainer = canvas.parentElement;
-    canvasContainer.style.backgroundColor = '#ffffff';
-    canvasContainer.style.borderRadius = '12px';
-    canvasContainer.style.border = '1px solid #e0e0e0';
-}
-
-function calculateTrendLine(data) {
-    if (data.length < 2) return data;
-    
-    const n = data.length;
-    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-    
-    for (let i = 0; i < n; i++) {
-        sumX += i;
-        sumY += data[i];
-        sumXY += i * data[i];
-        sumX2 += i * i;
-    }
-    
-    const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
-    const intercept = (sumY - slope * sumX) / n;
-    
-    return data.map((_, i) => slope * i + intercept);
-}
-
-function filterDataByDays(data, days) {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - days);
-    
-    return data.filter(d => new Date(d.Date) >= cutoffDate);
-}
-
-/* ===== INSIGHTS (TOP GAINERS/LOSERS) ===== */
-function updateInsights() {
-    const insights = [];
-    
-    for (const company of companies) {
-        if (allStockData[company] && allStockData[company].length > 0) {
-            const data = allStockData[company];
-            const oldest = parseFloat(data[0].Close);
-            const newest = parseFloat(data[data.length - 1].Close);
-            const change = ((newest - oldest) / oldest) * 100;
-            
-            insights.push({
-                name: company,
-                change: change,
-                price: newest
-            });
-        }
-    }
-    
-    // Sort by change
-    insights.sort((a, b) => b.change - a.change);
-    
-    // Top gainers (top 3)
-    const gainers = insights.slice(0, 3);
-    const losers = insights.slice(-3).reverse();
-    
-    displayInsights('top-gainers', gainers, 'gain');
-    displayInsights('top-losers', losers, 'loss');
-}
-
-function displayInsights(elementId, items, type) {
-    const container = document.getElementById(elementId);
+const displayComparisons = (id, items) => {
+    const container = q(id);
     container.innerHTML = '';
-    
     items.forEach(item => {
         const div = document.createElement('div');
         div.className = 'insight-item';
         div.style.cursor = 'pointer';
-        
         const change = item.change !== undefined ? item.change : item.daily_change;
         const sign = change >= 0 ? '+' : '';
-        const changeClass = change >= 0 ? 'gain' : 'loss';
-        
-        div.innerHTML = `
-            <span class="insight-name">${item.name || item.symbol}</span>
-            <span class="insight-change ${changeClass}">${sign}${change.toFixed(2)}%</span>
-        `;
-        
+        const cls = change >= 0 ? 'gain' : 'loss';
+        div.innerHTML = `<span class="insight-name">${item.name || item.symbol}</span><span class="insight-change ${cls}">${sign}${change.toFixed(2)}%</span>`;
         div.addEventListener('click', () => {
-            const symbol = item.symbol || item.name;
-            const companyItem = document.querySelector(`.watchlist-item[data-symbol="${symbol}"]`);
-            if (companyItem) {
-                selectCompany(symbol, companyItem);
-            }
+            const sym = item.symbol || item.name;
+            const el = qSel(`.watchlist-item[data-symbol="${sym}"]`)[0];
+            if (el) selectCompany(sym, el);
         });
-        
         container.appendChild(div);
     });
-}
+};
 
-/* ===== METRICS TAB ===== */
-async function loadMetrics(symbol) {
-    try {
-        const response = await fetch(`${API_BASE_URL}/metrics/${symbol}`);
-        if (!response.ok) throw new Error('Failed to fetch metrics');
-        const metricsData = await response.json();
-        displayMetrics(metricsData);
-        
-        // Also load correlation matrix
-        loadCorrelationMatrix();
-    } catch (error) {
-        console.error('Error loading metrics:', error);
-    }
-}
-
-function displayMetrics(data) {
-    const metricsContent = document.getElementById('metrics-content');
-    const metricsTitleElement = document.getElementById('metrics-title');
-    const normalizedChartSection = document.getElementById('normalized-chart-section');
-    
-    // Update title
-    metricsTitleElement.textContent = `${data.symbol} - ${data.name} (${data.sector})`;
-    
-    // Create metrics grid
-    const metricsGrid = document.createElement('div');
-    metricsGrid.className = 'metrics-grid';
-    
-    const dailyChangeColor = data.daily_change >= 0 ? 'positive' : 'negative';
-    const dailyChangeSign = data.daily_change >= 0 ? '+' : '';
-    
-    metricsGrid.innerHTML = `
-        <div class="metric-card">
-            <div class="metric-label">Current Price</div>
-            <div class="metric-value">₹${data.current_price.toFixed(2)}</div>
-        </div>
-        
-        <div class="metric-card">
-            <div class="metric-label">Daily Change</div>
-            <div class="metric-value ${dailyChangeColor}">${dailyChangeSign}${data.daily_change.toFixed(2)}%</div>
-        </div>
-        
-        <div class="metric-card">
-            <div class="metric-label">52W High</div>
-            <div class="metric-value">₹${data.high_52w.toFixed(2)}</div>
-        </div>
-        
-        <div class="metric-card">
-            <div class="metric-label">52W Low</div>
-            <div class="metric-value">₹${data.low_52w.toFixed(2)}</div>
-        </div>
-        
-        <div class="metric-card">
-            <div class="metric-label">Average Price</div>
-            <div class="metric-value">₹${data.avg_price.toFixed(2)}</div>
-        </div>
-        
-        <div class="metric-card">
-            <div class="metric-label">Volatility (7D)</div>
-            <div class="metric-value">${(data.volatility * 100).toFixed(2)}%</div>
-        </div>
-        
-        <div class="metric-card">
-            <div class="metric-label">Volume</div>
-            <div class="metric-value">${(data.volume / 1000000).toFixed(1)}M</div>
-        </div>
-        
-        <div class="metric-card">
-            <div class="metric-label">From 52W Low</div>
-            <div class="metric-value positive">+${data.performance_from_low.toFixed(2)}%</div>
-        </div>
-    `;
-    
-    // Clear and populate metrics content
-    metricsContent.innerHTML = '';
-    metricsContent.appendChild(metricsGrid);
-    
-    // Render normalized performance chart
-    renderNormalizedChart(data.normalized_data, data.symbol);
-    normalizedChartSection.style.display = 'block';
-}
-
-function renderNormalizedChart(normalizedData, symbol) {
-    const normalizedChartElement = document.getElementById('normalized-chart');
-    
-    // Sort data by date
-    const sortedData = [...normalizedData].sort((a, b) => new Date(a.date) - new Date(b.date));
-    
-    const dates = sortedData.map(d => {
-        const date = new Date(d.date);
-        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    });
-    
-    const values = sortedData.map(d => parseFloat(d.value));
-    
-    if (normalizedChart) normalizedChart.destroy();
-    
-    normalizedChart = new Chart(normalizedChartElement, {
-        type: 'line',
-        data: {
-            labels: dates,
-            datasets: [{
-                label: `${symbol} Performance from 52W Low (%)`,
-                data: values,
-                borderColor: '#2ecc71',
-                backgroundColor: 'rgba(46, 204, 113, 0.1)',
-                borderWidth: 2.5,
-                pointRadius: 3,
-                pointBackgroundColor: '#2ecc71',
-                fill: true,
-                tension: 0.4,
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    display: true,
-                    labels: { font: { size: 13 }, color: '#1a1a1a', padding: 12 }
-                },
-                tooltip: {
-                    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-                    padding: 12,
-                    titleFont: { size: 14 },
-                    bodyFont: { size: 13 },
-                    titleColor: '#333333',
-                    bodyColor: '#333333',
-                    borderColor: '#507782',
-                    borderWidth: 1,
-                    callbacks: {
-                        label: (context) => `Performance: ${context.parsed.y.toFixed(2)}%`
-                    }
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    grid: { color: 'rgba(224, 224, 224, 0.5)' },
-                    ticks: {
-                        color: '#666666',
-                        font: { size: 12 },
-                        callback: (value) => `${value.toFixed(0)}%`
-                    }
-                },
-                x: {
-                    grid: { display: false },
-                    ticks: { color: '#666666', font: { size: 12 } }
-                }
-            }
-        }
-    });
-}
-
-/* ===== GAINERS/LOSERS TAB ===== */
-async function loadGainersLosers() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/gainers-losers`);
-        if (!response.ok) throw new Error('Failed to fetch gainers/losers');
-        const data = await response.json();
-        displayGainersLosers(data);
-    } catch (error) {
-        console.error('Error loading gainers/losers:', error);
-    }
-}
-
-function displayGainersLosers(data) {
-    displayInsights('top-gainers', data.gainers, 'gain');
-    displayInsights('top-losers', data.losers, 'loss');
-}
-
-async function loadCorrelationMatrix() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/correlation-matrix`);
-        if (!response.ok) throw new Error('Failed to fetch correlation matrix');
-        const data = await response.json();
-        if (!data.error) {
-            renderCorrelationMatrix(data);
-        }
-    } catch (error) {
-        console.error('Error loading correlation matrix:', error);
-    }
-}
-
-function renderCorrelationMatrix(data) {
-    const container = document.getElementById('correlation-matrix-container');
-    const correlationSection = document.getElementById('correlation-section');
-    
+const displayCorrelationMatrix = (data) => {
+    const container = q('correlation-matrix-container');
+    const section = q('correlation-section');
     if (!data.symbols || !data.matrix) {
-        correlationSection.style.display = 'none';
+        section.style.display = 'none';
         return;
     }
-    
-    // Create table
     const table = document.createElement('table');
     table.className = 'correlation-table';
-    
-    // Header row
-    const headerRow = document.createElement('tr');
-    const headerCell = document.createElement('th');
-    headerCell.textContent = '';
-    headerRow.appendChild(headerCell);
-    
-    data.symbols.forEach(symbol => {
+    const head = document.createElement('tr');
+    head.appendChild(document.createElement('th'));
+    data.symbols.forEach(s => {
         const th = document.createElement('th');
-        th.textContent = symbol;
-        headerRow.appendChild(th);
+        th.textContent = s;
+        head.appendChild(th);
     });
-    table.appendChild(headerRow);
-    
-    // Data rows
-    data.matrix.forEach((row, rowIndex) => {
+    table.appendChild(head);
+    data.matrix.forEach((row, i) => {
         const tr = document.createElement('tr');
-        
-        // Row header
-        const rowHeader = document.createElement('th');
-        rowHeader.textContent = data.symbols[rowIndex];
-        rowHeader.style.textAlign = 'left';
-        tr.appendChild(rowHeader);
-        
-        // Correlation cells
-        row.forEach((value, colIndex) => {
+        const th = document.createElement('th');
+        th.textContent = data.symbols[i];
+        th.style.textAlign = 'left';
+        tr.appendChild(th);
+        row.forEach(v => {
             const td = document.createElement('td');
-            
-            // Determine color class based on correlation value
-            let cellClass = 'correlation-cell';
-            if (value === 1.0) {
-                cellClass += ' correlation-perfect';
-            } else if (value >= 0.8) {
-                cellClass += ' correlation-high';
-            } else if (value >= 0.5) {
-                cellClass += ' correlation-moderate';
-            } else {
-                cellClass += ' correlation-low';
-            }
-            
-            td.className = cellClass;
-            td.textContent = value.toFixed(2);
+            let cls = 'correlation-cell';
+            if (v === 1.0) cls += ' correlation-perfect';
+            else if (v >= 0.8) cls += ' correlation-high';
+            else if (v >= 0.5) cls += ' correlation-moderate';
+            else cls += ' correlation-low';
+            td.className = cls;
+            td.textContent = v.toFixed(2);
             tr.appendChild(td);
         });
-        
         table.appendChild(tr);
     });
-    
     container.innerHTML = '';
     container.appendChild(table);
-    correlationSection.style.display = 'block';
-}
+    section.style.display = 'block';
+};
 
-function populateCompareSelects() {
-    const select1 = document.getElementById('compare-stock1');
-    const select2 = document.getElementById('compare-stock2');
-    
-    select1.innerHTML = '<option value="">Select First Stock</option>';
-    select2.innerHTML = '<option value="">Select Second Stock</option>';
-    
-    companies.forEach(company => {
-        const option1 = document.createElement('option');
-        option1.value = company;
-        option1.textContent = company;
-        select1.appendChild(option1);
-        
-        const option2 = document.createElement('option');
-        option2.value = company;
-        option2.textContent = company;
-        select2.appendChild(option2);
+const updateGainersLosers = () => {
+    const insights = [];
+    STATE.companies.forEach(sym => {
+        if (STATE.stockData[sym]?.length > 0) {
+            const data = STATE.stockData[sym];
+            const change = proc.priceChange(parseFloat(data[0].Close), parseFloat(data[data.length - 1].Close));
+            insights.push({ symbol: sym, name: sym, change, price: parseFloat(data[data.length - 1].Close) });
+        }
     });
-}
+    insights.sort((a, b) => b.change - a.change);
+    displayComparisons('top-gainers', insights.slice(0, 3));
+    displayComparisons('top-losers', insights.slice(-3).reverse());
+};
 
-async function executeComparison() {
-    const stock1 = document.getElementById('compare-stock1').value;
-    const stock2 = document.getElementById('compare-stock2').value;
-    
-    if (!stock1 || !stock2) {
-        alert('Please select both stocks');
-        return;
-    }
-    
-    if (stock1 === stock2) {
-        alert('Please select different stocks');
-        return;
-    }
-    
-    try {
-        // Fetch correlation
-        const correlationResponse = await fetch(`${API_BASE_URL}/compare?symbol1=${stock1}&symbol2=${stock2}`);
-        const correlationData = await correlationResponse.json();
-        
-        // Get data from cache
-        const data1 = allStockData[stock1];
-        const data2 = allStockData[stock2];
-        
-        // Render comparison
-        renderComparisonChart(data1, data2, stock1, stock2);
-        displayComparisonStats(correlationData.correlation, stock1, stock2);
-        displayComparisonHeader(stock1, stock2);
-        
-        document.getElementById('compare-results').classList.remove('hidden');
-    } catch (error) {
-        console.error('Comparison error:', error);
-        alert('Failed to execute comparison');
-    }
-}
+const displayOverviewHeader = (data) => {
+    const h = q('company-header');
+    const m = q('overview-metrics');
+    h.classList.remove('hidden');
+    m.classList.remove('hidden');
+    q('header-company-name').textContent = data.name;
+    q('header-company-info').textContent = `Finance · ${data.sector}`;
+    q('header-price').textContent = fmt.price(data.current_price);
+    const ce = q('header-change');
+    const sign = data.daily_change >= 0 ? '+' : '';
+    ce.textContent = `${sign}${data.daily_change.toFixed(2)}% today`;
+    ce.className = `header-change ${data.daily_change_color}`;
+    q('metric-52w-high').textContent = fmt.price(data.high_52w);
+    q('metric-52w-low').textContent = fmt.price(data.low_52w);
+    q('metric-avg-close').textContent = fmt.price(data.avg_price);
+    q('metric-volatility').textContent = `${(data.volatility * 100).toFixed(2)}%`;
+};
 
-function displayComparisonHeader(symbol1, symbol2) {
-    const chartHeader = document.querySelector('.compare-results');
-    let header = chartHeader.querySelector('.comparison-header');
+const displayMetrics = (data) => {
+    const mc = q('metrics-content');
+    const mt = q('metrics-title');
+    const ncs = q('normalized-chart-section');
+    mt.textContent = `${data.symbol} - ${data.name} (${data.sector})`;
+    const dcc = data.daily_change >= 0 ? 'positive' : 'negative';
+    const dcs = data.daily_change >= 0 ? '+' : '';
+    mc.innerHTML = `<div class="metrics-grid">
+        <div class="metric-card"><div class="metric-label">Current Price</div><div class="metric-value">${fmt.price(data.current_price)}</div></div>
+        <div class="metric-card"><div class="metric-label">Daily Change</div><div class="metric-value ${dcc}">${dcs}${data.daily_change.toFixed(2)}%</div></div>
+        <div class="metric-card"><div class="metric-label">52W High</div><div class="metric-value">${fmt.price(data.high_52w)}</div></div>
+        <div class="metric-card"><div class="metric-label">52W Low</div><div class="metric-value">${fmt.price(data.low_52w)}</div></div>
+        <div class="metric-card"><div class="metric-label">Average Price</div><div class="metric-value">${fmt.price(data.avg_price)}</div></div>
+        <div class="metric-card"><div class="metric-label">Volatility (7D)</div><div class="metric-value">${(data.volatility * 100).toFixed(2)}%</div></div>
+        <div class="metric-card"><div class="metric-label">Volume</div><div class="metric-value">${fmt.vol(data.volume)}</div></div>
+        <div class="metric-card"><div class="metric-label">From 52W Low</div><div class="metric-value positive">+${data.performance_from_low.toFixed(2)}%</div></div>
+    </div>`;
+    ncs.style.display = 'block';
+};
+
+const displayComparisonStats = (corr, s1, s2) => {
+    const ci = q('correlation-info');
+    const mi = q('comparison-metrics');
+    const cv = parseFloat(corr).toFixed(3);
+    let interpretation = '', color = '#666';
+    if (cv > 0.7) { interpretation = 'Strong positive - move together'; color = '#27ae60'; }
+    else if (cv > 0.3) { interpretation = 'Moderate positive - similar trends'; color = COLORS.green; }
+    else if (cv > -0.3) { interpretation = 'Weak/none - independent'; color = COLORS.orange; }
+    else if (cv > -0.7) { interpretation = 'Moderate negative - inverse'; color = '#e67e22'; }
+    else { interpretation = 'Strong negative - opposite'; color = COLORS.red; }
+    
+    const d1 = STATE.stockData[s1];
+    const d2 = STATE.stockData[s2];
+    const c1 = proc.priceChange(parseFloat(d1[0].Close), parseFloat(d1[d1.length - 1].Close)).toFixed(2);
+    const c2 = proc.priceChange(parseFloat(d2[0].Close), parseFloat(d2[d2.length - 1].Close)).toFixed(2);
+    const cc1 = c1 >= 0 ? COLORS.green : COLORS.red;
+    const cc2 = c2 >= 0 ? COLORS.green : COLORS.red;
+    
+    ci.innerHTML = `<strong style="font-size:16px;color:${COLORS.teal}">Correlation</strong><div style="font-size:24px;font-weight:700;color:${color};margin:10px 0">${cv}</div><div style="font-size:13px;color:#666">${interpretation}</div>`;
+    mi.innerHTML = `<strong style="font-size:16px;color:${COLORS.teal}">Performance</strong><div style="margin-top:10px"><div style="display:flex;justify-content:space-between;margin:8px 0"><span>${s1}</span><span style="font-weight:600;color:${cc1}">${fmt.pct(c1)}</span></div><div style="display:flex;justify-content:space-between;margin:8px 0"><span>${s2}</span><span style="font-weight:600;color:${cc2}">${fmt.pct(c2)}</span></div></div>`;
+};
+
+const displayComparisonHeader = (s1, s2) => {
+    const h = qSel('.compare-results')[0];
+    let header = h?.querySelector('.comparison-header');
     if (!header) {
         header = document.createElement('div');
         header.className = 'comparison-header';
-        chartHeader.insertBefore(header, chartHeader.firstChild);
+        h?.insertBefore(header, h.firstChild);
     }
-    header.innerHTML = `
-        <h3 style="font-size: 22px; color: #507782; margin: 0;">${symbol1} vs ${symbol2}</h3>
-        <p style="color: #666; margin: 8px 0; font-size: 14px;">Last 30 days price comparison</p>
-    `;
-}
+    header.innerHTML = `<h3 style="font-size:22px;color:${COLORS.teal};margin:0">${s1} vs ${s2}</h3><p style="color:#666;margin:8px 0;font-size:14px">Last 30 days comparison</p>`;
+};
 
-function renderComparisonChart(data1, data2, symbol1, symbol2) {
-    // Sort data
-    data1.sort((a, b) => new Date(a.Date) - new Date(b.Date));
-    data2.sort((a, b) => new Date(a.Date) - new Date(b.Date));
-    
-    // Get last 30 days
-    const filtered1 = filterDataByDays(data1, 30);
-    const filtered2 = filterDataByDays(data2, 30);
-    
-    const dates1 = new Set(filtered1.map(d => d.Date));
-    const dates2 = new Set(filtered2.map(d => d.Date));
-    const commonDates = Array.from(dates1).filter(d => dates2.has(d)).sort();
-    
-    const closes1 = commonDates.map(date => parseFloat(data1.find(d => d.Date === date)?.Close || 0));
-    const closes2 = commonDates.map(date => parseFloat(data2.find(d => d.Date === date)?.Close || 0));
-    const dateLabels = commonDates.map(d => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-    
-    const ctx = document.getElementById('comparison-chart');
-    if (comparisonChart) comparisonChart.destroy();
-    
-    comparisonChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: dateLabels,
-            datasets: [
-                {
-                    label: `${symbol1} (₹)`,
-                    data: closes1,
-                    borderColor: '#507782',
-                    backgroundColor: 'rgba(80, 119, 130, 0.05)',
-                    borderWidth: 2.5,
-                    pointRadius: 3,
-                    fill: true,
-                    tension: 0.4,
-                },
-                {
-                    label: `${symbol2} (₹)`,
-                    data: closes2,
-                    borderColor: '#e74c3c',
-                    backgroundColor: 'rgba(231, 76, 60, 0.05)',
-                    borderWidth: 2.5,
-                    pointRadius: 3,
-                    fill: true,
-                    tension: 0.4,
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    display: true,
-                    labels: {
-                        font: { size: 13 },
-                        color: '#1a1a1a',
-                        padding: 12,
-                    }
-                },
-                tooltip: {
-                    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-                    padding: 12,
-                    titleFont: { size: 14 },
-                    bodyFont: { size: 13 },
-                    titleColor: '#333333',
-                    bodyColor: '#333333',
-                    borderColor: '#507782',
-                    borderWidth: 1,
-                    callbacks: {
-                        label: (context) => `${context.dataset.label}: ₹${context.parsed.y.toFixed(2)}`
-                    }
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: false,
-                    grid: { color: 'rgba(224, 224, 224, 0.5)' },
-                    ticks: {
-                        color: '#666666',
-                        font: { size: 12 },
-                        callback: (value) => `₹${value.toFixed(0)}`
-                    }
-                },
-                x: {
-                    grid: { display: false },
-                    ticks: { color: '#666666', font: { size: 12 } }
-                }
-            }
-        }
+// Async data loading
+const loadWatchlist = async () => {
+    try {
+        const items = await API.getWatchlist();
+        displayWatchlist(items);
+    } catch (e) { console.error('Error loading watchlist:', e); }
+};
+
+const fetchAndRenderChart = async (symbol, days) => {
+    try {
+        const data = await API.getData(symbol, 90);
+        STATE.stockData[symbol] = data;
+        const filtered = proc.filterDays(data, parseInt(days));
+        renderChart(filtered, symbol);
+    } catch (e) { console.error(`Error fetching ${symbol}:`, e); }
+};
+
+const loadAllStockData = async () => {
+    for (const company of STATE.companies) {
+        try {
+            STATE.stockData[company] = await API.getData(company);
+        } catch (e) { console.error(`Error loading ${company}:`, e); }
+    }
+    updateGainersLosers();
+};
+
+const loadOverviewHeader = async (symbol) => {
+    try {
+        const metrics = await API.getMetrics(symbol);
+        displayOverviewHeader(metrics);
+    } catch (e) { console.error('Error loading header:', e); }
+};
+
+const loadMetrics = async (symbol) => {
+    try {
+        const metrics = await API.getMetrics(symbol);
+        displayMetrics(metrics);
+        renderNormalized(metrics.normalized_data, metrics.symbol);
+        const ci = q('correlation-section');
+        if (ci) ci.style.display = 'block';
+    } catch (e) { console.error('Error loading metrics:', e); }
+};
+
+const loadCorrelationMatrix = async () => {
+    try {
+        const data = await API.getCorrelation();
+        if (!data.error) displayCorrelationMatrix(data);
+    } catch (e) { console.error('Error loading correlation matrix:', e); }
+};
+
+const loadGainersLosers = async () => {
+    try {
+        const { gainers, losers } = await API.getGainersLosers();
+        displayComparisons('top-gainers', gainers);
+        displayComparisons('top-losers', losers);
+    } catch (e) { console.error('Error loading gainers/losers:', e); }
+};
+
+const populateSelects = () => {
+    const s1 = q('compare-stock1');
+    const s2 = q('compare-stock2');
+    s1.innerHTML = '<option value="">Select First Stock</option>';
+    s2.innerHTML = '<option value="">Select Second Stock</option>';
+    STATE.companies.forEach(c => {
+        const o1 = document.createElement('option');
+        o1.value = c;
+        o1.textContent = c;
+        s1.appendChild(o1);
+        const o2 = document.createElement('option');
+        o2.value = c;
+        o2.textContent = c;
+        s2.appendChild(o2);
     });
-}
+};
 
-function displayComparisonStats(correlation, symbol1, symbol2) {
-    const correlationInfo = document.getElementById('correlation-info');
-    const metricsInfo = document.getElementById('comparison-metrics');
-    const correlationValue = parseFloat(correlation).toFixed(3);
+const executeComparison = async () => {
+    const s1 = q('compare-stock1').value;
+    const s2 = q('compare-stock2').value;
+    if (!s1 || !s2) { alert('Select both stocks'); return; }
+    if (s1 === s2) { alert('Select different stocks'); return; }
     
-    let interpretation = '';
-    let color = '#666';
+    try {
+        if (!STATE.stockData[s1]) { alert(`No data for ${s1}`); return; }
+        if (!STATE.stockData[s2]) { alert(`No data for ${s2}`); return; }
+        
+        const { correlation } = await API.getComparison(s1, s2);
+        renderComparison(STATE.stockData[s1], STATE.stockData[s2], s1, s2);
+        displayComparisonStats(correlation, s1, s2);
+        displayComparisonHeader(s1, s2);
+        q('compare-results').classList.remove('hidden');
+    } catch (e) { alert(`Comparison failed: ${e.message}`); }
+};
+
+const updateDate = () => {
+    const de = q('live-date');
+    if (de) de.textContent = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+// Initialize
+const initApp = async () => {
+    try {
+        STATE.companies = await API.getCompanies();
+        console.log('Companies loaded:', STATE.companies);
+        await loadWatchlist();
+        populateSelects();
+        await loadAllStockData();
+        await loadGainersLosers();
+    } catch (e) { console.error('Init error:', e); }
+};
+
+document.addEventListener('DOMContentLoaded', async () => {
+    console.log('Dashboard initializing...');
+    console.log('API Base URL:', API_URL);
     
-    if (correlationValue > 0.7) {
-        interpretation = 'Strong positive correlation - Stocks move together';
-        color = '#27ae60';
-    } else if (correlationValue > 0.3) {
-        interpretation = 'Moderate positive correlation - Similar trends';
-        color = '#2ecc71';
-    } else if (correlationValue > -0.3) {
-        interpretation = 'Weak/no correlation - Independent movement';
-        color = '#f39c12';
-    } else if (correlationValue > -0.7) {
-        interpretation = 'Moderate negative correlation - Inverse trends';
-        color = '#e67e22';
-    } else {
-        interpretation = 'Strong negative correlation - Opposite movement';
-        color = '#e74c3c';
-    }
+    updateDate();
+    initApp();
     
-    // Get data for price info
-    const data1 = allStockData[symbol1];
-    const data2 = allStockData[symbol2];
+    // Tab setup
+    qAll('tab-button').forEach(btn => btn.addEventListener('click', e => {
+        const tab = e.target.closest('.tab-button')?.dataset.tab;
+        if (tab) switchTab(tab);
+    }));
     
-    const latest1 = data1[data1.length - 1];
-    const latest2 = data2[data2.length - 1];
-    const earliest1 = data1[0];
-    const earliest2 = data2[0];
+    // Filter buttons
+    qAll('filter-btn').forEach(btn => btn.addEventListener('click', e => {
+        const filter = e.target.dataset.filter;
+        STATE.currentFilter = filter;
+        qAll('filter-btn').forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        if (STATE.currentTab === 'overview' && STATE.selectedCompany) fetchAndRenderChart(STATE.selectedCompany, filter);
+    }));
     
-    const change1 = ((parseFloat(latest1.Close) - parseFloat(earliest1.Close)) / parseFloat(earliest1.Close) * 100).toFixed(2);
-    const change2 = ((parseFloat(latest2.Close) - parseFloat(earliest2.Close)) / parseFloat(earliest2.Close) * 100).toFixed(2);
+    // Time period buttons
+    qAll('time-btn').forEach(btn => btn.addEventListener('click', e => {
+        const period = e.target.dataset.period;
+        STATE.currentFilter = period;
+        qAll('time-btn').forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        if (STATE.selectedCompany) fetchAndRenderChart(STATE.selectedCompany, period);
+    }));
     
-    const changeColor1 = change1 >= 0 ? '#2ecc71' : '#e74c3c';
-    const changeColor2 = change2 >= 0 ? '#2ecc71' : '#e74c3c';
+    // Watchlist
+    q('watchlist').addEventListener('click', e => {
+        const li = e.target.closest('.watchlist-item');
+        if (li) selectCompany(li.dataset.symbol, li);
+    });
     
-    correlationInfo.innerHTML = `
-        <strong style="font-size: 16px; color: #507782;">Correlation Coefficient</strong>
-        <div style="font-size: 24px; font-weight: 700; color: ${color}; margin: 10px 0;">${correlationValue}</div>
-        <div style="font-size: 13px; color: #666; line-height: 1.6;">${interpretation}</div>
-    `;
-    
-    metricsInfo.innerHTML = `
-        <strong style="font-size: 16px; color: #507782;">Performance (All data)</strong>
-        <div style="margin-top: 10px;">
-            <div style="display: flex; justify-content: space-between; margin: 8px 0;">
-                <span>${symbol1}</span>
-                <span style="font-weight: 600; color: ${changeColor1};">${change1 >= 0 ? '+' : ''}${change1}%</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; margin: 8px 0;">
-                <span>${symbol2}</span>
-                <span style="font-weight: 600; color: ${changeColor2};">${change2 >= 0 ? '+' : ''}${change2}%</span>
-            </div>
-        </div>
-    `;
-}
+    // Compare
+    q('execute-compare').addEventListener('click', executeComparison);
+});

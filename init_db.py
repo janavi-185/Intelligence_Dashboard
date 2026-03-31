@@ -59,14 +59,27 @@ def main():
     # Create tables
     init_database()
     
-    # Ask user if they want to populate data
-    print("\nDo you want to fetch and populate stock data now?")
-    response = input("Enter 'y' for yes or 'n' for no: ").strip().lower()
+    # Auto-populate in production, prompt in development
+    environment = os.getenv("ENVIRONMENT", "development").lower()
     
-    if response == 'y':
+    if environment == "production":
+        # In production (Render), auto-populate without waiting for input
+        print("\n[Production] Auto-populating stock data...")
         populate_stock_data()
     else:
-        print("Skipping data population. Run this script again to populate data later.")
+        # In development, ask user
+        print("\nDo you want to fetch and populate stock data now?")
+        try:
+            response = input("Enter 'y' for yes or 'n' for no: ").strip().lower()
+        except EOFError:
+            # If stdin not available (e.g., piped input), default to 'y'
+            print("stdin not available, defaulting to 'y'")
+            response = 'y'
+        
+        if response == 'y':
+            populate_stock_data()
+        else:
+            print("Skipping data population. Run this script again to populate data later.")
     
     print("\n" + "=" * 50)
     print("✅ Initialization complete!")

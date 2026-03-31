@@ -191,30 +191,55 @@ def get_stock_metrics(symbol: str):
         raise ValueError(f"Error calculating metrics for {symbol}: {str(e)}")
 
 def get_correlation_matrix():
-    """Calculate correlation matrix for top stocks (90-day returns)"""
-    from app.data.fetch_data import AVAILABLE_COMPANIES
+    """Calculate correlation matrix for available stocks (60-day returns)"""
     import pandas as pd
+    from app.models.database import SessionLocal
+    from app.data.db_operations import get_stock_data_by_days
     
     try:
-        # Get 90 days of data for each stock
+        db = SessionLocal()
+        
+        # Get 60 days of data for each stock directly from database
         stocks_data = {}
-        for symbol in AVAILABLE_COMPANIES[:6]:  # Top 6 stocks for correlation
-            df = get_stock_data(symbol)
-            if not df.empty and len(df) >= 60:
-                stocks_data[symbol] = df.tail(60)['Close'].values
         
-        # Create dataframe from all stocks
-        if not stocks_data:
-            return {"error": "Insufficient data"}
+        # Query database for available symbols
+        from sqlalchemy import func
+        from app.models.database import StockData
+        available_symbols = db.query(func.distinct(StockData.symbol)).all()
+        available_symbols = [s[0] for s in available_symbols]
         
-        df_corr = pd.DataFrame(stocks_data)
-        correlation_matrix = df_corr.corr().round(2)
+        # Limit to max 8 stocks for correlation matrix
+        for symbol in available_symbols[:8]:
+            try:
+                df = get_stock_data_by_days(db, symbol, 60)
+                if not df.empty and len(df) >= 20:  # Need at least 20 days
+                    df_sorted = df.sort_values('Date').set_index('Date')
+                    stocks_data[symbol] = df_sorted['Close']
+            except Exception:
+                continue
+        
+        db.close()
+        
+        # Need at least 2 stocks
+        if len(stocks_data) < 2:
+            return {"error": "Insufficient data (need at least 2 stocks)"}
+        
+        # Align all stocks to same date range (inner join on dates)
+        df_combined = pd.DataFrame(stocks_data)
+        df_combined = df_combined.dropna()  # Remove any NaN values
+        
+        if len(df_combined) < 5:
+            return {"error": "Insufficient overlapping data points"}
+        
+        # Calculate correlation
+        correlation_matrix = df_combined.corr().round(2)
         
         # Convert to dictionary format for JSON response
         result = {
             "symbols": list(correlation_matrix.columns),
             "matrix": correlation_matrix.values.tolist(),
-            "period": "60-day"
+            "period": "60-day",
+            "data_points": len(df_combined)
         }
         return result
     except Exception as e:

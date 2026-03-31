@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="main-container">
+        <!-- LEFT SIDEBAR -->
+        <aside class="sidebar">
+            <div class="logo-section">
+                <div class="logo">Stock</div>
+            </div>
+            <div class="sidebar-header">
+                <h2>Companies</h2>
+            </div>
+            <ul id="companies-list" class="companies-list">
+                <li class="loading">Loading companies...</li>
+            </ul>
+        </aside>
+
+        <!-- RIGHT SECTION -->
+        <div class="right-section">
+            <!-- TOP BAR -->
+            <div class="top-bar">
+                <div class="top-bar-content">
+                    <div class="live-indicator">
+                        <span class="live-dot"></span>
+                        <span class="live-text">Live</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- MAIN CONTENT -->
+            <main class="main-content">
+            <div class="dashboard-title">
+                <h1>Stock Dashboard</h1>
+            </div>
+            
+            <!-- FILTERS -->
+            <div class="filters-section">
+                <button class="filter-btn active" data-filter="30">Last 30 Days</button>
+                <button class="filter-btn" data-filter="90">Last 90 Days</button>
+                <button class="filter-btn" data-filter="compare">Compare Stocks</button>
+            </div>
+
+            <!-- CHART AREA -->
+            <div class="chart-section">
+                <div class="chart-header">
+                    <h3 id="chart-title">Select a company</h3>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="stock-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- TOP GAINERS/LOSERS -->
+            <div class="insights-section">
+                <div class="insights-container">
+                    <div class="insights-panel">
+                        <h3>Top Gainers</h3>
+                        <div id="top-gainers" class="insights-list"></div>
+                    </div>
+                    <div class="insights-panel">
+                        <h3>Top Losers</h3>
+                        <div id="top-losers" class="insights-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- COMPARISON MODE (hidden by default) -->
+            <div id="compare-mode" class="compare-mode hidden">
+                <div class="compare-header">
+                    <button class="back-btn" id="back-from-compare">
+                        <i class="fas fa-arrow-left"></i> Back
+                    </button>
+                    <h3>Compare Stocks</h3>
+                </div>
+                <div class="compare-controls">
+                    <select id="compare-stock1" class="compare-select">
+                        <option value="">Select First Stock</option>
+                    </select>
+                    <span class="compare-vs">vs</span>
+                    <select id="compare-stock2" class="compare-select">
+                        <option value="">Select Second Stock</option>
+                    </select>
+                    <button class="execute-btn" id="execute-compare">Compare</button>
+                </div>
+                <div id="compare-results" class="compare-results hidden">
+                    <div class="compare-charts">
+                        <div class="compare-chart-wrapper">
+                            <canvas id="comparison-chart"></canvas>
+                        </div>
+                        <div class="comparison-stats">
+                            <div id="correlation-info" class="stat-card"></div>
+                            <div id="comparison-metrics" class="stat-card"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+            </div>  <!-- closes right-section -->
+        </div>  <!-- closes main-container -->
+
+    <script src="script.js"></script>
+</body>
+</html>

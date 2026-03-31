@@ -42,6 +42,9 @@ htmlcov/
 .ipynb_checkpoints/
 
 # Optional local data artifacts (uncomment if needed)
-# data/*.csv
-# data/*.json
+data/*.json
 # data/*.parquet
+
+data/cache/
+*.md
+*.csv

@@ -15,6 +15,10 @@ def get_last_30_days(symbol: str):
     df = get_stock_data(symbol)
     return df.tail(30).to_dict(orient="records")
 
+def get_last_90_days(symbol: str):
+    df = get_stock_data(symbol)
+    return df.tail(90).to_dict(orient="records")
+
 def get_stock_summary(symbol: str):
     df = get_stock_data(symbol)
     return get_summary(df)
